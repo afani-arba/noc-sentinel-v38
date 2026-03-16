@@ -1,0 +1,171 @@
+{
+  "project_name": "NOC-Sentinel",
+  "design_philosophy": {
+    "theme_name": "Tactical Dark",
+    "core_concept": "Professional Network Operations Center (NOC) tool. High density, high contrast, precision data visualization.",
+    "emotional_goal": "Control, Reliability, Clarity.",
+    "mode": "dark"
+  },
+  "typography": {
+    "font_family_headings": "Rajdhani, sans-serif",
+    "font_family_body": "Inter, sans-serif",
+    "font_family_code": "JetBrains Mono, monospace",
+    "scale": {
+      "h1": "text-4xl font-bold tracking-tight",
+      "h2": "text-3xl font-semibold tracking-tight",
+      "h3": "text-2xl font-medium",
+      "body": "text-sm leading-relaxed",
+      "small": "text-xs text-muted-foreground",
+      "code": "font-mono text-xs"
+    },
+    "import_url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Rajdhani:wght@500;600;700&display=swap"
+  },
+  "colors": {
+    "palette": {
+      "background": "#09090b",
+      "foreground": "#fafafa",
+      "card": "#121214",
+      "card_foreground": "#fafafa",
+      "popover": "#121214",
+      "popover_foreground": "#fafafa",
+      "primary": "#3b82f6",
+      "primary_foreground": "#ffffff",
+      "secondary": "#27272a",
+      "secondary_foreground": "#fafafa",
+      "muted": "#27272a",
+      "muted_foreground": "#a1a1aa",
+      "accent": "#27272a",
+      "accent_foreground": "#fafafa",
+      "destructive": "#ef4444",
+      "destructive_foreground": "#fafafa",
+      "border": "#27272a",
+      "input": "#27272a",
+      "ring": "#3b82f6"
+    },
+    "status_colors": {
+      "success": "#10b981",
+      "warning": "#f59e0b",
+      "error": "#ef4444",
+      "info": "#3b82f6",
+      "chart_1": "#3b82f6",
+      "chart_2": "#10b981",
+      "chart_3": "#f59e0b",
+      "chart_4": "#8b5cf6",
+      "chart_5": "#ec4899"
+    }
+  },
+  "layout_strategy": {
+    "global": "bento_grid_dense",
+    "container": "max-w-[1600px] mx-auto p-6",
+    "spacing": "comfortable",
+    "grid_gap": "gap-4 md:gap-6",
+    "border_radius": "rounded-sm"
+  },
+  "components": {
+    "buttons": {
+      "style": "sharp",
+      "default": "bg-primary hover:bg-primary/90 text-white font-medium px-4 py-2 rounded-sm shadow-sm transition-all active:scale-95",
+      "outline": "border border-input bg-background hover:bg-accent hover:text-accent-foreground rounded-sm",
+      "ghost": "hover:bg-accent hover:text-accent-foreground rounded-sm"
+    },
+    "cards": {
+      "style": "flat_border",
+      "classes": "bg-card text-card-foreground rounded-sm border border-border shadow-sm p-5"
+    },
+    "inputs": {
+      "style": "minimal",
+      "classes": "flex h-9 w-full rounded-sm border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+    },
+    "tables": {
+      "style": "dense",
+      "classes": "w-full caption-bottom text-sm",
+      "header_classes": "h-10 px-2 text-left align-middle font-medium text-muted-foreground [&:has([role=checkbox])]:pr-0",
+      "row_classes": "border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted",
+      "cell_classes": "p-2 align-middle [&:has([role=checkbox])]:pr-0 font-mono"
+    }
+  },
+  "visual_enhancers": {
+    "glassmorphism": "backdrop-blur-md bg-background/80 border-b border-border/50 sticky top-0 z-50",
+    "gradients": "None. Use solid colors for professional clarity.",
+    "shadows": "shadow-sm",
+    "borders": "1px solid #27272a"
+  },
+  "charts": {
+    "library": "recharts",
+    "theme": "dark",
+    "tooltip_style": {
+      "contentStyle": {
+        "backgroundColor": "#121214",
+        "borderColor": "#27272a",
+        "borderRadius": "4px",
+        "color": "#fafafa"
+      }
+    }
+  },
+  "images": {
+    "login_background": {
+      "url": "https://images.unsplash.com/photo-1558494949-ef526b0042a0?auto=format&fit=crop&q=80&w=2000",
+      "alt": "Server rack lights in dark data center",
+      "category": "background"
+    },
+    "logo_placeholder": {
+      "url": "https://images.unsplash.com/photo-1550751827-4bd374c3f58b?auto=format&fit=crop&q=80&w=100",
+      "alt": "Cybersecurity shield icon",
+      "category": "logo"
+    },
+    "user_avatar": {
+      "url": "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=100",
+      "alt": "User avatar",
+      "category": "avatar"
+    }
+  },
+  "pages": {
+    "login": {
+      "layout": "split_screen",
+      "left_panel": "Brand logo, welcome text, feature highlights (Professional Network Monitoring)",
+      "right_panel": "Login form (Username, Password), minimalist card centered",
+      "background_image_blur": "blur-sm opacity-20"
+    },
+    "dashboard": {
+      "layout": "grid_bento",
+      "widgets": [
+        { "name": "Status Overview", "type": "stats_row", "cols": "4" },
+        { "name": "Traffic History", "type": "area_chart", "cols": "8", "rows": "2" },
+        { "name": "Active Users Donut", "type": "donut_chart", "cols": "4", "rows": "2" },
+        { "name": "System Health", "type": "gauge_chart", "cols": "4", "rows": "2" },
+        { "name": "Recent Alerts", "type": "list", "cols": "8", "rows": "2" }
+      ]
+    },
+    "pppoe_users": {
+      "layout": "standard_list",
+      "features": ["Search bar", "Status filter (Active/Disabled)", "Add User Button", "Data Table"]
+    },
+    "hotspot_users": {
+      "layout": "standard_list",
+      "features": ["Search bar", "Profile filter", "Add User Button", "Data Table"]
+    },
+    "reports": {
+      "layout": "form_preview",
+      "sections": ["Report Config (Date Range, Type)", "Preview Area (PDF simulation)", "Export Actions"]
+    }
+  },
+  "instructions_to_main_agent": [
+    "Follow the 'Tactical Dark' theme strictly. No light mode toggles unless requested.",
+    "Use 'Rajdhani' font for all headings (h1-h4) and 'JetBrains Mono' for any data points (IP addresses, MAC addresses, Byte counts).",
+    "Use 'Inter' for standard UI text (labels, descriptions).",
+    "All tables must use 'dense' padding (p-2) to show maximum data.",
+    "Charts should use the defined 'status_colors' palette.",
+    "The Sidebar should be collapsible or thin icon-only on mobile.",
+    "Login page should feel like entering a secure facility.",
+    "Use Shadcn components but override rounded-lg with rounded-sm for a sharper, more technical look."
+  ],
+  "universal_guidelines": [
+    "Don't make generic centered layouts.",
+    "Create depth through layered design elements with z-index hierarchy.",
+    "Use glass-morphism effects with backdrop filters (12-24px blur) for sticky headers.",
+    "Every interaction needs micro-animations - hover states, transitions.",
+    "Use 2-3x more spacing than feels comfortable in layout containers, but tight spacing in data tables.",
+    "Subtle grain textures or noise overlays can be used on the background.",
+    "All interactive elements MUST include data-testid attribute."
+  ]
+}
