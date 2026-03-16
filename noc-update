@@ -2,16 +2,16 @@
 # ╔══════════════════════════════════════════════════════════════════════════╗
 # ║   NOC Sentinel v3.8 — One-Command Update Script                          ║
 # ║                                                                           ║
-# ║   INSTALL (sekali saja di server):                                        ║
-# ║     sudo cp /opt/noc-sentinel-v38/noc-update /usr/local/bin/noc-update38 ║
-# ║     sudo chmod +x /usr/local/bin/noc-update38                            ║
+# ║   INSTALL (sekali saja, setelah migrate.sh):                             ║
+# ║     sudo cp /opt/noc-sentinel-v38/noc-update /usr/local/bin/noc-update   ║
+# ║     sudo chmod +x /usr/local/bin/noc-update                              ║
 # ║                                                                           ║
-# ║   CARA PAKAI:  sudo noc-update38                                          ║
+# ║   CARA PAKAI:  sudo noc-update                                           ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 set -e
 
 APP_DIR="/opt/noc-sentinel-v38"
-SERVICE="ARBAMonitoringV38"
+SERVICE="ARBAMonitoring"          # Nama service TETAP sama (sudah diarahkan oleh migrate.sh)
 VENV="$APP_DIR/backend/venv"
 [ -d "$APP_DIR/backend/.venv" ] && VENV="$APP_DIR/backend/.venv"
 
@@ -34,7 +34,7 @@ echo ""
 # ══════════════════════════════════════════════════════════════════════════════
 # STEP 1 — STOP SERVICE (bebaskan port 8080)
 # ══════════════════════════════════════════════════════════════════════════════
-step "[1/5] Stop Backend (port 8080)..."
+step "[1/5] Stop Backend (port 8000)..."
 
 systemctl stop "$SERVICE" 2>/dev/null || true
 
@@ -44,17 +44,17 @@ while systemctl is-active --quiet "$SERVICE" 2>/dev/null && [[ $i -lt 20 ]]; do
     sleep 1; i=$((i+1))
 done
 
-# Bunuh paksa yang masih memegang port 8080
+# Bunuh paksa yang masih memegang port 8000
 set +e
-PIDS=$(lsof -ti:8080 2>/dev/null)
+PIDS=$(lsof -ti:8000 2>/dev/null)
 if [[ -n "$PIDS" ]]; then
-    echo "  Membunuh proses di port 8080: $PIDS"
+    echo "  Membunuh proses di port 8000: $PIDS"
     kill -9 $PIDS 2>/dev/null
 fi
-fuser -k 8080/tcp 2>/dev/null
+fuser -k 8000/tcp 2>/dev/null
 set -e
 
-ok "Backend stopped — port 8080 bebas"
+ok "Backend stopped — port 8000 bebas"
 
 # ── 2. Git Pull ───────────────────────────────────────────────────────────────
 step "[2/5] Git Pull dari GitHub..."
@@ -107,7 +107,7 @@ fi
 systemctl reload nginx 2>/dev/null && ok "Nginx di-reload" || true
 
 sleep 2
-if curl -sf http://localhost:8080/api/health 2>/dev/null | grep -q "ok"; then
+if curl -sf http://localhost:8000/api/health 2>/dev/null | grep -q "ok"; then
     ok "API health check: OK ✔"
 else
     warn "API belum respond — cek: journalctl -u $SERVICE -f"
@@ -120,7 +120,7 @@ echo -e "${G}${BOLD}║   ✅  UPDATE v3.8 SELESAI!                  ║${N}"
 echo -e "${G}${BOLD}╚════════════════════════════════════════════╝${N}"
 echo ""
 echo -e "  Commit  : $(git -C $APP_DIR log -1 --format='%h — %s')"
-echo -e "  Backend : $(systemctl is-active $SERVICE) (port 8080)"
+echo -e "  Backend : $(systemctl is-active $SERVICE) (port 8000)"
 echo -e "  Frontend: http://SERVER_IP:1755"
 echo -e "  Waktu   : $(date '+%Y-%m-%d %H:%M:%S')"
 echo ""
