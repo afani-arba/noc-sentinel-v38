@@ -19,8 +19,12 @@ APP_DIR = str(Path(__file__).parent.parent.parent)
 BACKEND_DIR = str(Path(__file__).parent.parent)
 FRONTEND_DIR = str(Path(__file__).parent.parent.parent / "frontend")
 
-# Candidate paths
-VENV_PIP  = str(Path(BACKEND_DIR) / "venv" / "bin" / "pip")
+# Candidate paths — support both venv/ and .venv/
+BACKEND_DIR_PATH = Path(BACKEND_DIR)
+_venv_candidates = [BACKEND_DIR_PATH / "venv" / "bin" / "pip", BACKEND_DIR_PATH / ".venv" / "bin" / "pip"]
+VENV_PIP = str(next((p for p in _venv_candidates if p.exists()), _venv_candidates[0]))
+_uvicorn_candidates = [BACKEND_DIR_PATH / "venv" / "bin" / "uvicorn", BACKEND_DIR_PATH / ".venv" / "bin" / "uvicorn"]
+VENV_UVICORN = str(next((u for u in _uvicorn_candidates if u.exists()), _uvicorn_candidates[0]))
 UPDATE_SH = str(Path(APP_DIR) / "update.sh")
 # Baca dari env agar bisa dikonfigurasi tanpa edit kode
 SERVICE_NAME = os.environ.get("NOC_SERVICE_NAME", "noc-backend")
@@ -34,17 +38,6 @@ _update_state = {
     "error": "",
     "started_at": None,
 }
-
-# Project root: /opt/noc-sentinel  (parent of backend/)
-APP_DIR = str(Path(__file__).parent.parent.parent)
-BACKEND_DIR = str(Path(__file__).parent.parent)
-FRONTEND_DIR = str(Path(__file__).parent.parent.parent / "frontend")
-
-# Candidate paths
-VENV_PIP  = str(Path(BACKEND_DIR) / "venv" / "bin" / "pip")
-UPDATE_SH = str(Path(APP_DIR) / "update.sh")
-# Baca dari env agar bisa dikonfigurasi tanpa edit kode
-SERVICE_NAME = os.environ.get("NOC_SERVICE_NAME", "noc-backend")
 
 
 @router.get("/check-update")
@@ -217,12 +210,15 @@ async def perform_update(user=Depends(require_admin)):
             _append("✅ Backend deps OK" if pip.returncode == 0 else f"⚠️ pip: {pip.stderr[:200]}")
 
             _append("[3/4] Install + build frontend...")
-            yarn_path = subprocess.run(["which", "yarn"], capture_output=True, text=True).stdout.strip() or "yarn"
-            subprocess.run([yarn_path, "install", "--silent"], capture_output=True, cwd=FRONTEND_DIR, timeout=180)
+            npm_path = subprocess.run(["which", "npm"], capture_output=True, text=True).stdout.strip() or "npm"
+            subprocess.run(
+                [npm_path, "install", "--legacy-peer-deps", "--prefer-offline"],
+                capture_output=True, cwd=FRONTEND_DIR, timeout=240
+            )
 
             build_env = {**dict(os.environ), "CI": "false", "DISABLE_ESLINT_PLUGIN": "true"}
             build_proc = subprocess.Popen(
-                [yarn_path, "build"],
+                [npm_path, "run", "build"],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, cwd=FRONTEND_DIR, env=build_env
             )
@@ -276,6 +272,42 @@ async def update_status(user=Depends(require_admin)):
     }
 
 
+@router.get("/debug-bw")
+async def debug_bw(user=Depends(require_admin)):
+    """
+    Debug endpoint: lihat data bandwidth terakhir dari traffic_history.
+    Berguna untuk diagnosa kenapa DL/UL = 0.
+    """
+    from core.db import get_db
+    db = get_db()
+    devs = await db.devices.find({}, {"_id": 0, "id": 1, "name": 1, "isp_interfaces": 1,
+                                      "api_mode": 1, "ros_version": 1}).to_list(50)
+    results = []
+    for d in devs:
+        last = await db.traffic_history.find_one(
+            {"device_id": d["id"]},
+            {"_id": 0, "timestamp": 1, "bandwidth": 1, "isp_bandwidth": 1,
+             "download_mbps": 1, "upload_mbps": 1},
+            sort=[("timestamp", -1)]
+        )
+        bw_keys = list((last.get("bandwidth") or {}).keys()) if last else []
+        isp_bw_keys = list((last.get("isp_bandwidth") or {}).keys()) if last else []
+        results.append({
+            "name": d.get("name"),
+            "api_mode": d.get("api_mode"),
+            "ros_version": d.get("ros_version"),
+            "isp_interfaces": d.get("isp_interfaces", []),
+            "last_ts": (last or {}).get("timestamp"),
+            "dl_mbps": (last or {}).get("download_mbps", 0),
+            "ul_mbps": (last or {}).get("upload_mbps", 0),
+            "bw_iface_count": len(bw_keys),
+            "bw_iface_names": bw_keys[:10],   # max 10 for readability
+            "isp_bw_names": isp_bw_keys,
+        })
+    return {"debug_bw": results}
+
+
+
 @router.get("/app-info")
 async def app_info():
     """Return current app version info (commit hash, message, date)."""
@@ -294,11 +326,11 @@ async def app_info():
             "commit": commit.stdout.strip() if commit.returncode == 0 else "unknown",
             "message": msg.stdout.strip() if msg.returncode == 0 else "",
             "date": date.stdout.strip()[:19] if date.returncode == 0 else "",
-            "version": "v2.5",
+            "version": "v3.0",
             "service_name": svc_name,
         }
     except Exception:
-        return {"commit": "unknown", "message": "", "date": "", "version": "v2.5", "service_name": svc_name}
+        return {"commit": "unknown", "message": "", "date": "", "version": "v3.0", "service_name": svc_name}
 
 
 @router.get("/service-name")
@@ -407,7 +439,39 @@ async def save_influxdb_config(data: dict, user=Depends(require_admin)):
 
 @router.get("/health")
 async def health():
-    return {"status": "ok"}
+    """
+    Health check endpoint.
+    Mengembalikan status sistem termasuk:
+    - snmp_enabled: True jika pysnmp-lextudio terinstall dan bisa di-import
+    - app_version:  git commit hash pendek (7 karakter)
+    - syslog_port:  port UDP syslog yang aktif
+    """
+    # Cek pysnmp secara live menggunakan snmp_compat bridge
+    # (kompatibel dengan pysnmp 7.x baru maupun pysnmp-lextudio lama)
+    try:
+        from snmp_compat import PYSNMP_AVAILABLE
+        snmp_enabled = PYSNMP_AVAILABLE
+    except Exception:
+        snmp_enabled = False
+
+    # Ambil git commit hash pendek
+    app_version = "unknown"
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, cwd=APP_DIR, timeout=3
+        )
+        if commit.returncode == 0:
+            app_version = commit.stdout.strip()
+    except Exception:
+        pass
+
+    return {
+        "status": "ok",
+        "snmp_enabled": snmp_enabled,
+        "app_version": app_version,
+        "syslog_port": int(os.environ.get("SYSLOG_PORT", "5140")),
+    }
 
 
 @router.post("/save-genieacs-config")
@@ -482,4 +546,45 @@ async def get_genieacs_config(user=Depends(require_admin)):
         "username": _os.environ.get("GENIEACS_USERNAME", ""),
         "password_set": bool(_os.environ.get("GENIEACS_PASSWORD", "")),
     }
+
+
+# ── Winbox Path Configuration ─────────────────────────────────────────────────
+
+@router.get("/winbox-config")
+async def get_winbox_config(user=Depends(require_admin)):
+    """Return configured Winbox executable path."""
+    import os as _os
+    return {
+        "winbox_path": _os.environ.get("WINBOX_PATH", ""),
+    }
+
+
+@router.post("/save-winbox-config")
+async def save_winbox_config(data: dict, user=Depends(require_admin)):
+    """
+    Simpan path executable Winbox ke .env agar bisa dipakai saat generate URL.
+    Contoh path: C:\\Users\\user\\Desktop\\winbox64.exe
+    """
+    winbox_path = (data.get("winbox_path") or "").strip()
+    # Path boleh kosong (artinya gunakan default URI scheme winbox://)
+
+    backend_dir = Path(__file__).parent.parent
+    env_path = backend_dir / ".env"
+    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+
+    updated = False
+    new_lines = []
+    for line in lines:
+        if line.startswith("WINBOX_PATH="):
+            new_lines.append(f"WINBOX_PATH={winbox_path}")
+            updated = True
+        else:
+            new_lines.append(line)
+    if not updated:
+        new_lines.append(f"WINBOX_PATH={winbox_path}")
+
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    os.environ["WINBOX_PATH"] = winbox_path
+    logger.info(f"Winbox path saved: {winbox_path!r}")
+    return {"message": "Path Winbox disimpan.", "winbox_path": winbox_path}
 

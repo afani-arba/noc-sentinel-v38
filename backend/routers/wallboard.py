@@ -3,6 +3,7 @@ Wallboard router: NOC Wall Display endpoints.
 Provides aggregated device status, live metrics, and event ticker
 for NOC wall display screens.
 """
+import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends
@@ -16,30 +17,80 @@ logger = logging.getLogger(__name__)
 @router.get("/status")
 async def wallboard_status(user=Depends(get_current_user)):
     """
-    Return all devices with full real-time metrics for wall display grid.
-    Includes: status, CPU, memory, ping, uptime, last bandwidth.
+    Return devices with full real-time metrics for wall display grid.
+    - administrator / viewer: melihat SEMUA device
+    - user: hanya melihat device yang di-tag di allowed_devices
     """
     db = get_db()
-    devices = await db.devices.find({}, {"_id": 0, "snmp_community": 0, "api_password": 0}).to_list(200)
+    # Fetch tanpa credentials untuk response (aman dikirim ke client)
+    devices_all = await db.devices.find({}, {"_id": 0, "snmp_community": 0, "api_password": 0}).to_list(200)
+
+    # Filter berdasarkan role
+    role = user.get("role", "user")
+    if role == "user":
+        allowed = set(user.get("allowed_devices") or [])
+        devices = [d for d in devices_all if d["id"] in allowed]
+    else:
+        devices = devices_all
 
     enriched = []
+
     for d in devices:
         # Get latest traffic snapshot for bandwidth
         snap = await db.traffic_snapshots.find_one({"device_id": d["id"]})
 
         # Get last bandwidth from traffic_history
+        # FIXBUG: tambahkan isp_bandwidth ke projection agar PRIORITAS 1 bisa terpakai
         last_bw = await db.traffic_history.find_one(
             {"device_id": d["id"]},
-            {"_id": 0, "bandwidth": 1, "ping_ms": 1, "timestamp": 1},
+            {"_id": 0, "bandwidth": 1, "isp_bandwidth": 1, "ping_ms": 1, "timestamp": 1},
             sort=[("timestamp", -1)]
         )
 
         download_bps = 0
         upload_bps = 0
-        if last_bw and last_bw.get("bandwidth"):
-            bw = last_bw["bandwidth"]
-            download_bps = sum(v.get("download_bps", 0) for v in bw.values() if isinstance(v, dict))
-            upload_bps = sum(v.get("upload_bps", 0) for v in bw.values() if isinstance(v, dict))
+        isp_interfaces = d.get("isp_interfaces", [])
+
+        # ── Konstanta filter virtual interface ───────────────────────────────────
+        VIRTUAL_PREFIXES = (
+            "bridge", "vlan", "lo", "loopback", "ovpn", "pppoe-", "pptp",
+            "l2tp", "eoip", "gre", "wireguard", "wg", "veth", "docker",
+            "ip6tnl", "sit", "tun", "tap", "dummy",
+        )
+
+        def is_physical(name: str) -> bool:
+            """Return True jika interface bukan virtual."""
+            n = name.lower()
+            return not any(n.startswith(p) for p in VIRTUAL_PREFIXES)
+
+        if last_bw:
+            bw = last_bw.get("bandwidth") or {}
+
+            # ── PRIORITAS 1: isp_bandwidth (field baru, paling akurat) ────────
+            # Diisi oleh polling.py berdasarkan comment "ISP1..20/WAN/INPUT" di MikroTik
+            isp_bw_stored = last_bw.get("isp_bandwidth") or {}
+            if isp_bw_stored:
+                for iface_bw in isp_bw_stored.values():
+                    if isinstance(iface_bw, dict):
+                        download_bps += iface_bw.get("download_bps", 0)
+                        upload_bps   += iface_bw.get("upload_bps",   0)
+
+            # ── PRIORITAS 2: Fallback — filter bw dengan isp_interfaces ──────
+            elif bw and isp_interfaces:
+                for iface in isp_interfaces:
+                    iface_bw = bw.get(iface, {})
+                    if isinstance(iface_bw, dict):
+                        download_bps += iface_bw.get("download_bps", 0)
+                        upload_bps   += iface_bw.get("upload_bps",   0)
+
+            # ── PRIORITAS 3: Fallback — sum semua interface fisik saja ────────
+            # (Digunakan jika MikroTik belum diberi comment ISP/WAN/INPUT)
+            elif bw:
+                for iface_name, iface_bw in bw.items():
+                    if isinstance(iface_bw, dict) and is_physical(iface_name):
+                        download_bps += iface_bw.get("download_bps", 0)
+                        upload_bps   += iface_bw.get("upload_bps",   0)
+
 
         # Determine alert level
         alert_level = "normal"
@@ -53,6 +104,59 @@ async def wallboard_status(user=Depends(get_current_user)):
             alert_level = "critical"
         elif cpu > 75 or mem > 75 or ping > 100:
             alert_level = "warning"
+
+        pppoe_count   = d.get("pppoe_active", 0)
+        hotspot_count = d.get("hotspot_active", 0)
+
+        # ── ISP Interface Status (untuk badge ISP Down) ─────────────────────────
+        ISP_DOWN_THRESHOLD_BPS = 1_000_000   # 1 Mbps
+        isp_status = []
+        # isp_interface_comments: {iface_name: comment} — disimpan oleh polling.py dari MikroTik
+        isp_name_map = d.get("isp_interface_comments", {}) or {}
+
+        if d.get("status") == "online":
+            isp_bw_stored = last_bw.get("isp_bandwidth") if last_bw else None
+            bw_data       = last_bw.get("bandwidth")      if last_bw else None
+
+            if isp_bw_stored:
+                for iface_name, iface_bw in isp_bw_stored.items():
+                    if not isinstance(iface_bw, dict):
+                        continue
+                    dl_bps = iface_bw.get("download_bps", 0)
+                    ul_bps = iface_bw.get("upload_bps",   0)
+                    is_down = (
+                        (dl_bps < ISP_DOWN_THRESHOLD_BPS and ul_bps < ISP_DOWN_THRESHOLD_BPS)
+                        or iface_bw.get("status") == "down"
+                    )
+                    isp_status.append({
+                        "name":          iface_name,
+                        "comment":       isp_name_map.get(iface_name, ""),  # comment dari MikroTik
+                        "download_mbps": round(dl_bps / 1_000_000, 2),
+                        "upload_mbps":   round(ul_bps / 1_000_000, 2),
+                        "is_down":       is_down,
+                    })
+            elif bw_data and isp_interfaces:
+                for iface_name in isp_interfaces:
+                    iface_bw = bw_data.get(iface_name)
+                    if iface_bw is None:
+                        isp_status.append({
+                            "name":          iface_name,
+                            "comment":       isp_name_map.get(iface_name, ""),
+                            "download_mbps": 0,
+                            "upload_mbps":   0,
+                            "is_down":       True,
+                        })
+                    elif isinstance(iface_bw, dict):
+                        dl_bps = iface_bw.get("download_bps", 0)
+                        ul_bps = iface_bw.get("upload_bps",   0)
+                        is_down = (dl_bps < ISP_DOWN_THRESHOLD_BPS and ul_bps < ISP_DOWN_THRESHOLD_BPS)
+                        isp_status.append({
+                            "name":          iface_name,
+                            "comment":       isp_name_map.get(iface_name, ""),
+                            "download_mbps": round(dl_bps / 1_000_000, 2),
+                            "upload_mbps":   round(ul_bps / 1_000_000, 2),
+                            "is_down":       is_down,
+                        })
 
         enriched.append({
             "id": d.get("id"),
@@ -71,8 +175,14 @@ async def wallboard_status(user=Depends(get_current_user)):
             "download_mbps": round(download_bps / 1_000_000, 2),
             "upload_mbps": round(upload_bps / 1_000_000, 2),
             "last_poll": d.get("last_poll", ""),
-            "alert_level": alert_level,  # normal | warning | critical
+            "alert_level": alert_level,
+            "isp_interfaces": d.get("isp_interfaces", []),
+            "isp_status": isp_status,    # per-interface ISP status untuk wallboard badge
+            # Session counters dari DB cache
+            "pppoe_active":   pppoe_count,
+            "hotspot_active": hotspot_count,
         })
+
 
     # Sort: critical first, then warning, then normal; within each group: alphabetical
     order = {"critical": 0, "warning": 1, "normal": 2}
@@ -83,6 +193,9 @@ async def wallboard_status(user=Depends(get_current_user)):
     online = sum(1 for d in enriched if d["status"] == "online")
     offline = sum(1 for d in enriched if d["status"] == "offline")
     warning = sum(1 for d in enriched if d["alert_level"] == "warning")
+    # Akumulasi session counters dari semua device online
+    total_pppoe   = sum(d["pppoe_active"]   for d in enriched if d["status"] == "online")
+    total_hotspot = sum(d["hotspot_active"] for d in enriched if d["status"] == "online")
 
     return {
         "devices": enriched,
@@ -91,6 +204,8 @@ async def wallboard_status(user=Depends(get_current_user)):
             "online": online,
             "offline": offline,
             "warning": warning,
+            "total_pppoe":   total_pppoe,
+            "total_hotspot": total_hotspot,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
     }

@@ -179,6 +179,74 @@ async def summon_device(device_id: str, user=Depends(require_admin)):
         _err(e, "Summon failed")
 
 
+@router.post("/bulk-reboot")
+async def bulk_reboot(
+    body: dict,
+    user=Depends(require_admin),
+):
+    """
+    Bulk reboot ONT via GenieACS.
+    Terima: {device_ids: ["id1", "id2"]} atau {filter: "offline"}
+    Return: {success, failed, total, results}
+    """
+    device_ids: list[str] = body.get("device_ids", [])
+    filter_mode: str = body.get("filter", "")  # "offline" = otomatis ambil semua offline
+
+    # Jika filter=offline, ambil semua device yang offline dari GenieACS
+    if filter_mode == "offline" and not device_ids:
+        try:
+            all_devices = await asyncio.to_thread(svc.get_devices, 500, "", "")
+            device_ids = [
+                d.get("_id", "")
+                for d in all_devices
+                if not _is_online(d)
+            ]
+        except Exception as e:
+            raise HTTPException(502, f"Gagal ambil daftar device offline: {e}")
+
+    if not device_ids:
+        return {"message": "Tidak ada device yang perlu di-reboot", "success": 0, "failed": 0, "total": 0, "results": []}
+
+    async def _do_reboot(dev_id: str) -> dict:
+        try:
+            result = await asyncio.to_thread(svc.reboot_device, dev_id)
+            return {"device_id": dev_id, "success": True, "message": "Reboot task dikirim", "result": result}
+        except Exception as e:
+            return {"device_id": dev_id, "success": False, "message": str(e)}
+
+    # Concurrent reboot — batching 20 per wave agar tidak overload GenieACS
+    BATCH = 20
+    all_results = []
+    for i in range(0, len(device_ids), BATCH):
+        batch = device_ids[i:i + BATCH]
+        batch_results = await asyncio.gather(*[_do_reboot(did) for did in batch])
+        all_results.extend(batch_results)
+
+    success = sum(1 for r in all_results if r["success"])
+    failed = len(all_results) - success
+
+    return {
+        "message": f"Bulk reboot selesai: {success} berhasil, {failed} gagal",
+        "success": success,
+        "failed": failed,
+        "total": len(all_results),
+        "results": all_results,
+    }
+
+
+def _is_online(device: dict) -> bool:
+    """Cek apakah device GenieACS online (last_inform < 15 menit)."""
+    from datetime import datetime, timezone, timedelta
+    last = device.get("_lastInform", "")
+    if not last:
+        return False
+    try:
+        dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
+        return dt > datetime.now(timezone.utc) - timedelta(minutes=15)
+    except Exception:
+        return False
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _valid_rx(v: str) -> bool:
@@ -460,3 +528,13 @@ async def debug_device(device_id: str, user=Depends(require_admin)):
         _err(e, "Debug failed")
 
 
+# ── Health Check ──────────────────────────────────────────────────────────────
+
+@router.get("/health")
+async def health_check(user=Depends(get_current_user)):
+    """Test connectivity to GenieACS server. Returns {connected, url, latency_ms, error}."""
+    try:
+        result = await asyncio.to_thread(svc.check_health)
+        return result
+    except Exception as e:
+        return {"connected": False, "url": "", "latency_ms": 0, "error": str(e)}
